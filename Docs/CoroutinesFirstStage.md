@@ -1,10 +1,10 @@
 ### Practical C++20 coroutines notes for ARM Cortex-M
 
-Достаточно много времени прошло с предыдущей заметки на тему использования сопрограмм. Изначально было в планах продемонстрировать на чем-то концепцию и как именно их можно было применять. На тот момент вариант примера в виде мигания светодиодиком подошел отлично. Но он был слишком простой. Необходимо было придумать что-то более сложное и более полезное, что-ли. Таким образом и появилась идея переписать драйвер дисплея и SPI-FLASH в проекте-долгострое.
+Достаточно много времени прошло с предыдущей заметки на тему использования сопрограмм. Изначально было в планах продемонстрировать на чем-то концепцию и как именно их можно было применять. На тот момент вариант примера в виде мигания светодиодиком подошел отлично. Но он был слишком простой. Необходимо было придумать что-то более сложное и более полезное, что ли. Таким образом и появилась идея переписать драйвер дисплея и SPI-FLASH в проекте-долгострое.
 
 Небольшой план, что будет в заметке:
 
-1. Предистория с транзакциями
+1. Предыстория с транзакциями
 2. Как это работает в общих чертах
 3. Работаем с SPI интерфейсом
 4. Массив команд инициализации
@@ -19,13 +19,13 @@
 13. Ожидание окончания выполнения сопрограммы
 
 ### 0. Перед прочтением
-Заметка предполагает базовое знакомство читателя с сопрогрмаммами/ их синтаксисом. В силу наличия более подробных статей на тему деталей реализации сопрограмм и их устройства рекомендуются к прочтению следующие материалы:
+Заметка предполагает базовое знакомство читателя с сопрогрмаммами / их синтаксисом. В силу наличия более подробных статей на тему деталей реализации сопрограмм и их устройства рекомендуются к прочтению следующие материалы:
 
-https://blog.panicsoftware.com/your-first-coroutine/
-https://lewissbaker.github.io/2017/09/25/coroutine-theory
-https://lewissbaker.github.io/2017/11/17/understanding-operator-co-await
-https://lewissbaker.github.io/2018/09/05/understanding-the-promise-type
-https://lewissbaker.github.io/2020/05/11/understanding_symmetric_transfer
+* https://blog.panicsoftware.com/your-first-coroutine/
+* https://lewissbaker.github.io/2017/09/25/coroutine-theory
+* https://lewissbaker.github.io/2017/11/17/understanding-operator-co-await
+* https://lewissbaker.github.io/2018/09/05/understanding-the-promise-type
+* https://lewissbaker.github.io/2020/05/11/understanding_symmetric_transfer
 
 В заметке изложение материала может показаться непоследовательным. Предложения буду рад увидеть в виде issues или же в комментариях/сообщениях в Telegram.
 
@@ -55,8 +55,7 @@ template <typename... Args> void sendChunk(Args... _chunkArgs) noexcept
     chunkTransaction.beforeTransaction = [this] { setDcPin(); };
 
     chunkTransaction.transactionAction = [this, chunkToSend = std::move(chunk)] {
-        m_pBusPtr->sendChunk(
-            reinterpret_cast<const std::uint8_t*>(chunkToSend.data()), chunkToSend.size());
+        m_pBusPtr->sendChunk(chunkToSend.data(), chunkToSend.size());
     };
 
     chunkTransaction.afterTransaction = [this] { resetDcPin(); };
@@ -85,7 +84,7 @@ https://habr.com/ru/post/201826/
 https://habr.com/ru/company/yandex/blog/240525/
 https://habr.com/ru/post/340732/
 
-И было принято решение о переписывании на сопрограммы часть существующих драйверов.
+И было принято решение о переписывании на сопрограммы части существующих драйверов.
 
 ### 2. Как это работает в общих чертах
 Для разработчиков, которые имели дело с C#/Python/JS не являются чем-то новым ключевые слова `yeild`, `await`,`async`.(Да, они тут приведены в общем варианте, без принадлежности к конкретному языку). В кратце, идея сопрограмм состоит в возможности приостановки функции в любом месте исполнения с последствующим восстановлением ее работы из прерванной точки. Фактически, мы получаем легковесные потоки уровня пользователя, т.е. для переключения сопрограмм нам нет необходимости обращаться к ядру ОС/etc.
@@ -320,7 +319,7 @@ void initDisplay() noexcept
 Как может выглядеть процедура отправки дисплейного буфера? Т.к. в проекте используется библиотека LVGL -  фреймбуфер может быть non-screen-sized, т.е. не полностью соответствовать размеру буфера экрана, что позволяет выполнять отрисовку фрагментами.(Иногда может не быть возможности поместить полностью в память буфер дисплея)
 
 Для реализации функции отправки нам необходимо выполнить отправку команд на установку области экрана, в которую будет осуществлена отрисовка, после чего отправить команду на запись в память дисплея и выполнить отправку дисплейного буфера.
-Что-же. В синхронном варианте, данный код мог-бы иметь вид:
+Что-же. В синхронном варианте, данный код мог бы иметь вид:
 ```cpp
 void fillRectangle(
     std::uint16_t _x,
@@ -333,11 +332,11 @@ void fillRectangle(
     const std::uint16_t DisplayHeight = TBaseSpiDisplay::getHeight();
     const std::uint16_t DisplayWidth = TBaseSpiDisplay::getWidth();
 
-    const bool isCoordsValid{!((_x >= DisplayWidth) || (_y >= DisplayHeight))};
+    const bool isCoordsValid{!((_x >= DisplayWidth) || (_y >= DisplayHeight))}; // Не знакю как работает LVGL, но возможно правильнее было бы проверять `_x + _width < DisplayWidth && _y + _height < DisplayHeight`
     if (isCoordsValid)
     {
         //Определяем размеры буфера для отправки
-        const size_t BytesSizeX = (_width - _x + 1);
+        const size_t BytesSizeX = (_width - _x + 1); // Опять же я не знаю как работает LVGL, но выглядит подозрительно.
         const size_t BytesSizeY = (_height - _y + 1);
         const size_t BytesSquare = BytesSizeX * BytesSizeY;
         const size_t TransferBufferSize = (BytesSquare * sizeof(typename TBaseSpiDisplay::TColor));
